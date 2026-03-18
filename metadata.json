@@ -1,0 +1,43 @@
+{
+  "$schema": "https://go.kicad.org/pcm/schemas/v1",
+  "name": "Import Tool For Kicad",
+  "description": "Import library files from Octopart, Samacsys, Ultralibrarian, Snapeda and EasyEDA",
+  "description_full": "Import library files from Octopart, Samacsys, Ultralibrarian, Snapeda and EasyEDA.\n For usage and correct setup please read the Readme: \n https://github.com/Steffen-W/Import-LIB-KiCad-Plugin#use-of-the-application",
+  "identifier": "com.github.Steffen-W.impartGUI",
+  "type": "plugin",
+  "author": {
+    "name": "Hung Nguyen Duy",
+    "contact": {
+      "github": "https://github.com/gnuh202"
+    }
+  },
+  "maintainer": {
+    "name": "Hung Nguyen Duy",
+    "contact": {
+      "github": "https://github.com/gnuh202"
+    }
+  },
+  "license": "GPL-3.0",
+  "resources": {
+    "homepage": "https://github.com/gnuh202/Import-Lib-Kicad-Plugin"
+  },
+  "tags": [
+    "import",
+    "library",
+    "octopart",
+    "samacsys",
+    "ultralibrarian",
+    "snapeda",
+    "easyeda"
+  ],
+  "keep_on_update": [
+    "^/plugins/com_github_Steffen-W_impartGUI/config\\.ini$"
+  ],
+  "versions": [
+    {
+      "version": "2026.03.17",
+      "status": "stable",
+      "kicad_version": "8.0.4"
+    }
+  ]
+}
