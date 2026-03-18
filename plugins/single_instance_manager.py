@@ -3,11 +3,13 @@ Single Instance Manager with IPC communication for KiCad Plugin.
 Handles ensuring only one instance runs and brings existing window to foreground.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import socket
 import threading
-from typing import Any, Optional
+from typing import Any
 
 try:
     import wx
@@ -20,18 +22,19 @@ class SingleInstanceManager:
 
     def __init__(self, port: int = 59999):
         self.port = port
-        self.socket: Optional[socket.socket] = None
-        self.server_thread: Optional[threading.Thread] = None
+        self.socket: socket.socket | None = None
+        self.server_thread: threading.Thread | None = None
         self.running = False
-        self.frontend_instance: Optional[Any] = None
+        self.frontend_instance: Any | None = None
         self._stopped: bool = False
         self._stopping: bool = False
 
     def is_already_running(self) -> bool:
         """Check if another instance is running and send focus command."""
+        logging.info(f"Checking for existing instance on port {self.port}...")
         try:
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.settimeout(2.0)  # Longer timeout
+            client_socket.settimeout(2.0)
             client_socket.connect(("127.0.0.1", self.port))
 
             message = {"command": "focus"}
@@ -42,23 +45,25 @@ class SingleInstanceManager:
             try:
                 client_socket.settimeout(1.0)
                 response = client_socket.recv(64)
-                logging.debug(
-                    f"Received response: {response.decode('utf-8', errors='replace')}"
+                logging.info(
+                    f"Focus command acknowledged: {response.decode('utf-8', errors='replace')}"
                 )
             except socket.timeout:
-                pass  # No response is OK
+                logging.warning("Focus command sent but no acknowledgment received")
 
             client_socket.close()
 
-            logging.info("Sent focus command to existing instance")
+            logging.info("Existing instance found - focus command sent")
             return True
 
-        except (socket.error, ConnectionRefusedError, OSError) as e:
-            logging.debug(f"No existing instance found: {e}")
+        except (ConnectionRefusedError, OSError) as e:
+            logging.info(f"No existing instance found ({e}) - starting new instance")
             return False
 
     def start_server(self, frontend_instance: Any) -> bool:
         """Start IPC server to listen for commands."""
+        self._stopped = False
+        self._stopping = False
         self.frontend_instance = frontend_instance
 
         # Try to find an available port if default is busy
@@ -77,15 +82,13 @@ class SingleInstanceManager:
 
                 # Update port if we had to use a different one
                 if port_attempt != self.port:
-                    logging.info(
-                        f"Port {self.port} was busy, using {port_attempt} instead"
-                    )
+                    logging.info(f"Port {self.port} was busy, using {port_attempt} instead")
                     self.port = port_attempt
 
                 self.running = True
                 break
 
-            except socket.error as e:
+            except OSError as e:
                 if self.socket:
                     self.socket.close()
                     self.socket = None
@@ -108,7 +111,7 @@ class SingleInstanceManager:
                 if self.socket is None:
                     break
                 self.socket.settimeout(1.0)  # Add timeout to server socket
-                client_socket, addr = self.socket.accept()
+                client_socket, _ = self.socket.accept()
                 client_socket.settimeout(5.0)
 
                 data = client_socket.recv(1024).decode("utf-8", errors="ignore")
@@ -124,7 +127,7 @@ class SingleInstanceManager:
 
             except socket.timeout:
                 continue
-            except socket.error as e:
+            except OSError as e:
                 if self.running:
                     logging.error(f"Server socket error: {e}")
                 break
@@ -133,10 +136,10 @@ class SingleInstanceManager:
                 if client_socket:
                     try:
                         client_socket.close()
-                    except (socket.error, OSError):
+                    except OSError:
                         pass
 
-    def _handle_command(self, message: dict) -> None:
+    def _handle_command(self, message: dict[str, Any]) -> None:
         """Handle incoming commands."""
         command = message.get("command")
 
@@ -159,9 +162,7 @@ class SingleInstanceManager:
         try:
             # Check if window object is still valid
             if not hasattr(self.frontend_instance, "IsShown"):
-                logging.error(
-                    "Frontend instance has no IsShown method - window may be destroyed"
-                )
+                logging.error("Frontend instance has no IsShown method - window may be destroyed")
                 self.frontend_instance = None
                 return
 
@@ -186,11 +187,17 @@ class SingleInstanceManager:
                 logging.info("Window is iconized - restoring")
                 self.frontend_instance.Iconize(False)
 
-            # Bring to foreground
+            # Bring to foreground: briefly iconize then restore so the window
+            # manager treats it as a newly shown window and places it on top.
+            if not self.frontend_instance.IsIconized():
+                self.frontend_instance.Iconize(True)
+            self.frontend_instance.Iconize(False)
             self.frontend_instance.Raise()
             self.frontend_instance.SetFocus()
 
-            # Request user attention (platform-specific notification)
+            # Fallback for cases where Raise() is blocked by another
+            # top-level window (e.g. board editor has focus): at least
+            # notify the user via taskbar.
             if hasattr(self.frontend_instance, "RequestUserAttention"):
                 self.frontend_instance.RequestUserAttention()
 
@@ -208,9 +215,7 @@ class SingleInstanceManager:
             logging.info("Registered new frontend instance")
             return True
         else:
-            logging.info(
-                "Frontend instance already exists - new instance should not be created"
-            )
+            logging.info("Frontend instance already exists - new instance should not be created")
             return False
 
     def unregister_frontend(self) -> None:

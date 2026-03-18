@@ -3,6 +3,8 @@ KiCad Import Plugin for library files from various sources.
 Supports Octopart, Samacsys, Ultralibrarian, Snapeda and EasyEDA.
 """
 
+from __future__ import annotations
+
 import atexit
 import logging
 import os
@@ -11,7 +13,7 @@ import sys
 from pathlib import Path
 from threading import Thread
 from time import sleep
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable
 
 # Setup paths for local imports
 script_dir = Path(__file__).resolve().parent
@@ -27,7 +29,7 @@ def quick_instance_check(port: int = 59999) -> bool:
         client_socket.connect(("127.0.0.1", port))
         client_socket.close()
         return True
-    except (socket.error, socket.timeout, ConnectionRefusedError, OSError):
+    except (socket.timeout, ConnectionRefusedError, OSError):
         return False
 
 
@@ -49,9 +51,7 @@ if __name__ == "__main__":
             filename=script_dir / "plugin.log",
             filemode="a",  # Append for existing instance
         )
-        logging.warning(
-            "Another instance detected - exiting or continuing with limited logging"
-        )
+        logging.warning("Another instance detected - exiting or continuing with limited logging")
 
     logging.debug("Application starting...")
 
@@ -69,7 +69,6 @@ try:
     from .ConfigHandler import ConfigHandler
     from .FileHandler import FileHandler
     from .impart_gui import impartGUI
-    from .impart_migration import convert_lib_list, find_old_lib_files
     from .KiCad_Settings import KiCad_Settings
     from .KiCadImport import LibImporter
     from .KiCadSettingsPaths import KiCadApp
@@ -83,18 +82,17 @@ except ImportError as e1:
         from ConfigHandler import ConfigHandler  # type: ignore[import-not-found,no-redef]
         from FileHandler import FileHandler  # type: ignore[import-not-found,no-redef]
         from impart_gui import impartGUI  # type: ignore[import-not-found,no-redef]
-        from impart_migration import convert_lib_list, find_old_lib_files  # type: ignore[import-not-found,no-redef]
         from KiCad_Settings import KiCad_Settings  # type: ignore[import-not-found,no-redef]
         from KiCadImport import LibImporter  # type: ignore[import-not-found,no-redef]
         from KiCadSettingsPaths import KiCadApp  # type: ignore[import-not-found,no-redef]
-        from single_instance_manager import SingleInstanceManager  # type: ignore[import-not-found,no-redef]
+        from single_instance_manager import (  # type: ignore[import-not-found,no-redef]
+            SingleInstanceManager,
+        )
 
         logging.info("Successfully imported all local modules using absolute imports")
 
     except ImportError as e2:
-        logging.exception(
-            "Failed to import local modules with both relative and absolute imports"
-        )
+        logging.exception("Failed to import local modules with both relative and absolute imports")
         print(f"Relative import error: {e1}")
         print(f"Absolute import error: {e2}")
         print(f"Python path: {sys.path}")
@@ -123,12 +121,12 @@ class ResultEvent(wx.PyEvent):
 class FileDropTarget(wx.FileDropTarget):
     """Drop target for ZIP files on the text control."""
 
-    def __init__(self, window, callback):
+    def __init__(self, window: wx.Window, callback: Callable[[list[str]], None]) -> None:
         wx.FileDropTarget.__init__(self)
         self.window = window
         self.callback = callback
 
-    def OnDropFiles(self, x, y, filenames):
+    def OnDropFiles(self, _x: int, _y: int, filenames: list[str]) -> bool:
         """Called when files are dropped on the text control."""
         zip_files = [f for f in filenames if f.lower().endswith(".zip")]
 
@@ -147,7 +145,7 @@ class FileDropTarget(wx.FileDropTarget):
 class PluginThread(Thread):
     """Background thread for monitoring import status."""
 
-    def __init__(self, wx_object: wx.Window, backend) -> None:
+    def __init__(self, wx_object: wx.Window, backend: ImpartBackend) -> None:
         Thread.__init__(self)
         self.wx_object = wx_object
         self.backend = backend
@@ -185,10 +183,8 @@ class ImpartBackend:
         """Initialize backend components."""
         logging.info("Initializing ImpartBackend")
 
-        """Setup file paths."""
         self.config_path = os.path.join(os.path.dirname(__file__), "config.ini")
 
-        """Initialize core components."""
         try:
             self.kicad_app = KiCadApp(prefer_ipc=True, min_version="8.0.4")
             self.config = ConfigHandler(self.config_path)
@@ -209,16 +205,13 @@ class ImpartBackend:
             logging.exception("Failed to initialize backend components")
             raise
 
-        """Initialize control flags."""
         self.run_thread = False
         self.auto_import = False
         self.overwrite_import = False
-        self.import_old_format = False
-        self.local_lib = True
+        self.local_lib = False
         self.auto_lib = False
         self.print_buffer = ""
 
-        """Check initial configuration and version."""
         try:
             self.kicad_app.check_min_version(output_func=self.print_to_buffer)
         except Exception as e:
@@ -275,7 +268,6 @@ class ImpartBackend:
             result = self.importer.import_all(
                 lib_path,
                 overwrite_if_exists=self.overwrite_import,
-                import_old_format=self.import_old_format,
             )
             # Handle potential None result
             if result and len(result) > 0:
@@ -312,10 +304,13 @@ def check_library_import(backend: ImpartBackend, add_if_possible: bool = True) -
         dest_path = backend.config.get_DEST_PATH()
         msg = kicad_settings.check_GlobalVar(dest_path, add_if_possible)
 
-    for lib_name in ImpartBackend.SUPPORTED_LIBRARIES:
-        msg += _check_single_library(
-            kicad_settings, lib_name, dest_path, add_if_possible
-        )
+    libs_to_check = (
+        [backend.importer.lib_name]
+        if backend.importer.lib_name
+        else ImpartBackend.SUPPORTED_LIBRARIES
+    )
+    for lib_name in libs_to_check:
+        msg += _check_single_library(kicad_settings, lib_name, dest_path, add_if_possible)
 
     return msg
 
@@ -377,9 +372,7 @@ class ImpartFrontend(impartGUI):
         if not self.fallback_mode:
             if not instance_manager.register_frontend(self):
                 # Another instance already exists - this shouldn't happen
-                logging.warning(
-                    "Frontend instance already exists - destroying this one"
-                )
+                logging.warning("Frontend instance already exists - destroying this one")
                 self.Destroy()
                 return
         else:
@@ -395,7 +388,7 @@ class ImpartFrontend(impartGUI):
             logging.warning(f"Could not set window icon: {e}")
 
         self.backend = create_backend_handler()
-        self.thread: Optional[PluginThread] = None
+        self.thread: PluginThread | None = None
 
         self._setup_gui()
         self._setup_events()
@@ -404,24 +397,38 @@ class ImpartFrontend(impartGUI):
 
     def _setup_gui(self) -> None:
         """Initialize GUI components."""
-        #self.kicad_project = self.backend.kicad_app.get_project_dir().joinpath("LIBRARY1")
+        #self.kicad_project = self.backend.kicad_app.get_project_dir()
         self.kicad_project = Path(self.backend.kicad_app.get_project_dir()) / "LIBRARY"
         self.kicad_project.mkdir(parents=True, exist_ok=True)
-
+        
         # Set initial values
         self.m_dirPicker_sourcepath.SetPath(self.backend.config.get_SRC_PATH())
         self.m_dirPicker_librarypath.SetPath(self.backend.config.get_DEST_PATH())
 
-        # Set checkboxes
-        self.m_autoImport.SetValue(self.backend.auto_import)
-        self.m_overwrite.SetValue(self.backend.overwrite_import)
-        self.m_check_autoLib.SetValue(self.backend.auto_lib)
-        self.m_check_import_all.SetValue(self.backend.import_old_format)
-        self.m_checkBoxLocalLib.SetValue(self.backend.local_lib)
+        # Set checkboxes (load from persistent config)
+        auto_import = self.backend.config.get_value("auto_import") == "True"
+        overwrite_import = self.backend.config.get_value("overwrite_import") == "True"
+        auto_lib = self.backend.config.get_value("auto_lib") == "True"
+        local_lib = self.backend.config.get_value("local_lib") == "True"
+        self.m_autoImport.SetValue(auto_import)
+        self.m_overwrite.SetValue(overwrite_import)
+        self.m_check_autoLib.SetValue(auto_lib)
+        self.m_checkBoxLocalLib.SetValue(local_lib)
+        self.backend.auto_import = auto_import
+        self.backend.overwrite_import = overwrite_import
+        self.backend.auto_lib = auto_lib
+        self.backend.local_lib = local_lib
+        self.m_dirPicker_librarypath.Enable(not local_lib)
+
+        single_lib = self.backend.config.get_value("single_lib") == "True"
+        lib_name = self.backend.config.get_value("lib_name") or ""
+        self.m_checkBoxSingleLib.SetValue(single_lib)
+        self.m_textCtrl_libname.SetValue(lib_name)
+        self.m_textCtrl_libname.Show(single_lib)
+        self.Layout()
+        self.backend.importer.lib_name = lib_name if single_lib and lib_name else None
 
         self._update_button_label()
-        self._check_migration_possible()
-
         # Add drag & drop support
         self._setup_drag_drop()
         self._add_drag_drop_hint()
@@ -436,8 +443,7 @@ class ImpartFrontend(impartGUI):
         self.m_text.SetDropTarget(drop_target)
 
         self.m_text.SetToolTip(
-            "Drag ZIP files here for direct import\n"
-            "Supported: Samacsys, UltraLibrarian, Snapeda"
+            "Drag ZIP files here for direct import\nSupported: Samacsys, UltraLibrarian, Snapeda"
         )
 
     def _add_drag_drop_hint(self) -> None:
@@ -446,19 +452,17 @@ class ImpartFrontend(impartGUI):
         self.backend.print_to_buffer(hint_text)
         self.backend.print_to_buffer("=" * 50)
 
-    def _on_files_dropped(self, zip_files: List[str]) -> None:
+    def _on_files_dropped(self, zip_files: list[str]) -> None:
         """Callback when ZIP files are dropped on the text control."""
-        self.backend.print_to_buffer(
-            f"\n{len(zip_files)} file(s) received via drag & drop:"
-        )
+        self.backend.print_to_buffer(f"\n{len(zip_files)} file(s) received via drag & drop:")
 
         for zip_file in zip_files:
-            self.backend.print_to_buffer(f"  • {os.path.basename(zip_file)}")
+            self.backend.print_to_buffer(f"  - {os.path.basename(zip_file)}")
 
         self.backend.print_to_buffer("")
         self._import_dropped_files(zip_files)
 
-    def _import_dropped_files(self, zip_files: List[str]) -> None:
+    def _import_dropped_files(self, zip_files: list[str]) -> None:
         """Import files received via drag & drop."""
         self._update_backend_settings()
 
@@ -484,6 +488,8 @@ class ImpartFrontend(impartGUI):
             lib_mode = "Global Library"
 
         self.backend.print_to_buffer(f"Library Mode: {lib_mode}")
+        if self.kicad_project:
+            self.backend.print_to_buffer(f"KiCad Project: {self.kicad_project}")
         self.backend.print_to_buffer(f"Source Directory: {src_path}")
         self.backend.print_to_buffer(f"Destination Directory: {dest_path}")
         self.backend.print_to_buffer("=" * 50)
@@ -530,6 +536,18 @@ class ImpartFrontend(impartGUI):
 
         event.Skip()
 
+    def m_checkBoxSingleLibOnCheckBox(self, event: wx.CommandEvent) -> None:
+        """Handle single library name checkbox change."""
+        enabled = self.m_checkBoxSingleLib.IsChecked()
+        self.m_textCtrl_libname.Show(enabled)
+        self.Layout()
+        if enabled:
+            name = self.m_textCtrl_libname.GetValue().strip()
+            self.backend.importer.lib_name = name if name else None
+        else:
+            self.backend.importer.lib_name = None
+        event.Skip()
+
     def on_close(self, event: wx.CloseEvent) -> None:
         """Handle window close event with robust cleanup."""
         try:
@@ -547,9 +565,7 @@ class ImpartFrontend(impartGUI):
                     return
                 elif choice == "background":
                     self._safe_cleanup(close_ipc=False, stop_backend=False)
-                    logging.info(
-                        "Fallback mode: GUI closed, background thread continues"
-                    )
+                    logging.info("Fallback mode: GUI closed, background thread continues")
                     event.Skip()  # Close GUI completely
                     return
                 else:  # choice == "close"
@@ -567,7 +583,6 @@ class ImpartFrontend(impartGUI):
                     self._safe_cleanup(close_ipc=False, stop_backend=False)
                     if not self.IsIconized():
                         self.Iconize(True)
-                    # self.Hide()
                     logging.info(
                         "IPC mode: Frontend minimized, running in background with IPC active"
                     )
@@ -616,9 +631,9 @@ class ImpartFrontend(impartGUI):
         """Confirm what to do when background process is running."""
         msg = (
             "Import process runs in automatic mode.\n\n"
-            "• HIDE: Keep running, hide window\n"
-            "• STOP: Stop import and close\n"
-            "• CANCEL: Back to window"
+            "- HIDE: Keep running, hide window\n"
+            "- STOP: Stop import and close\n"
+            "- CANCEL: Back to window"
         )
 
         dlg = wx.MessageDialog(
@@ -641,12 +656,17 @@ class ImpartFrontend(impartGUI):
             return "cancel"
 
     def _save_settings(self) -> None:
-        """Save current settings to backend."""
+        """Save current settings to backend and persistent config."""
         self.backend.auto_import = self.m_autoImport.IsChecked()
         self.backend.overwrite_import = self.m_overwrite.IsChecked()
         self.backend.auto_lib = self.m_check_autoLib.IsChecked()
-        self.backend.import_old_format = self.m_check_import_all.IsChecked()
         self.backend.local_lib = self.m_checkBoxLocalLib.IsChecked()
+        self.backend.config.set_value("auto_import", str(self.backend.auto_import))
+        self.backend.config.set_value("overwrite_import", str(self.backend.overwrite_import))
+        self.backend.config.set_value("auto_lib", str(self.backend.auto_lib))
+        self.backend.config.set_value("local_lib", str(self.backend.local_lib))
+        self.backend.config.set_value("single_lib", str(self.m_checkBoxSingleLib.IsChecked()))
+        self.backend.config.set_value("lib_name", self.m_textCtrl_libname.GetValue().strip())
 
     def BottonClick(self, event: wx.CommandEvent) -> None:
         """Handle main button click."""
@@ -674,10 +694,15 @@ class ImpartFrontend(impartGUI):
 
         self.backend.importer.KICAD_3RD_PARTY_LINK = kicad_link
 
+        # Update single library name
+        if self.m_checkBoxSingleLib.IsChecked():
+            name = self.m_textCtrl_libname.GetValue().strip()
+            self.backend.importer.lib_name = name if name else None
+        else:
+            self.backend.importer.lib_name = None
+
         # Handle overwrite setting change
-        overwrite_changed = (
-            self.m_overwrite.IsChecked() and not self.backend.overwrite_import
-        )
+        overwrite_changed = self.m_overwrite.IsChecked() and not self.backend.overwrite_import
         if overwrite_changed:
             self.backend.folder_handler.known_files = set()
 
@@ -745,11 +770,26 @@ class ImpartFrontend(impartGUI):
         if old_dest != new_dest:
             self._print_path_change("destination", new_dest)
 
-        self._check_migration_possible()
+        event.Skip()
+
+    def OnComponentSearch(self, event: wx.CommandEvent) -> None:
+        """Open the component search dialog and fill the LCSC field on selection."""
+        try:
+            from .component_search import SearchDialog
+        except ImportError:
+            from component_search import SearchDialog  # type: ignore[import-not-found,no-redef]
+
+        def _live_update(lcsc: str) -> None:
+            self.m_textCtrl2.SetValue(lcsc)
+
+        dlg = SearchDialog(self, on_select=_live_update)
+        dlg.ShowModal()
+        dlg.Destroy()
         event.Skip()
 
     def ButtomManualImport(self, event: wx.CommandEvent) -> None:
         """Handle manual EasyEDA import."""
+        self._update_backend_settings()
         try:
             self._perform_easyeda_import()
         except Exception as e:
@@ -758,6 +798,7 @@ class ImpartFrontend(impartGUI):
             logging.exception("Manual import failed")
         finally:
             event.Skip()
+        self._check_and_show_library_warnings()
 
     def _perform_easyeda_import(self) -> None:
         """Perform EasyEDA component import."""
@@ -765,7 +806,7 @@ class ImpartFrontend(impartGUI):
             from .impart_easyeda import ImportConfig, import_easyeda_component
         except ImportError:
             try:
-                from impart_easyeda import (  # type: ignore[import-not-found,no-redef]
+                from impart_easyeda import (  # type: ignore[no-redef]
                     ImportConfig,
                     import_easyeda_component,
                 )
@@ -787,6 +828,10 @@ class ImpartFrontend(impartGUI):
 
         if self.backend.local_lib:
             if not self.kicad_project:
+                # Try a late refresh – KiCad may have opened a project after plugin start
+                self.backend.kicad_app.refresh_project_info()
+                self.kicad_project = self.backend.kicad_app.get_project_dir()
+            if not self.kicad_project:  # still None after refresh → genuine error
                 self.backend.print_to_buffer(
                     "Error: Local library mode selected, but no KiCad project is open."
                 )
@@ -795,30 +840,28 @@ class ImpartFrontend(impartGUI):
                 self.backend.print_to_buffer(
                     "  2. Uncheck 'Local Library' to use global library path"
                 )
-                logging.error(
-                    "Local library mode selected but no KiCad project available"
-                )
+                logging.error("Local library mode selected but no KiCad project available")
                 return
 
             # Verify the project path exists and is valid
             project_path = Path(self.kicad_project)
             if not project_path.exists() or not project_path.is_dir():
                 self.backend.print_to_buffer(
-                    f"Error: KiCad project directory does not exist: {project_path}"
+                    f"Error: KiCad project directory does not exist: {self.kicad_project}"
                 )
                 self.backend.print_to_buffer("Please check your KiCad project setup.")
-                logging.error(f"KiCad project directory invalid: {project_path}")
+                logging.error(f"KiCad project directory invalid: {self.kicad_project}")
                 return
 
             path_variable = "${KIPRJMOD}/LIBRARY"
             base_folder = project_path
         else:
             path_variable = "${KICAD_3RD_PARTY}"
-            base_folder = self.backend.config.get_DEST_PATH()
+            base_folder = Path(self.backend.config.get_DEST_PATH())
 
         config = ImportConfig(
             base_folder=Path(base_folder),
-            lib_name="EasyEDA",
+            lib_name=self.backend.importer.lib_name or "EasyEDA",
             overwrite=self.m_overwrite.IsChecked(),
             lib_var=path_variable,
         )
@@ -850,111 +893,8 @@ class ImpartFrontend(impartGUI):
             logging.exception(f"Unexpected error importing {component_id}")
             wx.MessageBox(error_msg, "Unexpected Error", wx.OK | wx.ICON_ERROR)
 
-    def get_old_lib_files(self) -> dict:
-        """Get list of old library files for migration."""
-        lib_path = self.m_dirPicker_librarypath.GetPath()
-        result = find_old_lib_files(
-            folder_path=lib_path, libs=ImpartBackend.SUPPORTED_LIBRARIES
-        )
-        return result
 
-    def _check_migration_possible(self) -> None:
-        """Check if library migration is possible and show/hide button."""
-        libs_to_migrate = self.get_old_lib_files()
-        conversion_info = convert_lib_list(libs_to_migrate, drymode=True)
-
-        if conversion_info:
-            self.m_button_migrate.Show()
-        else:
-            self.m_button_migrate.Hide()
-
-    def migrate_libs(self, event: wx.CommandEvent) -> None:
-        """Handle library migration."""
-        libs_to_migrate = self.get_old_lib_files()
-        conversion_info = convert_lib_list(libs_to_migrate, drymode=True)
-
-        if not conversion_info:
-            self.backend.print_to_buffer("Error in migrate_libs()")
-            return
-
-        self._perform_migration(libs_to_migrate, conversion_info)
-        self._check_migration_possible()
-        event.Skip()
-
-    def _perform_migration(
-        self, libs_to_migrate: dict, conversion_info: List[Tuple]
-    ) -> None:
-        """Perform the actual library migration."""
-        msg, lib_rename = self.backend.kicad_settings.prepare_library_migration(
-            conversion_info
-        )
-
-        if not self._confirm_migration(msg):
-            return
-
-        self._execute_conversion(libs_to_migrate)
-
-        if lib_rename:
-            self._handle_library_renaming(msg, lib_rename)
-
-    def _confirm_migration(self, msg: str) -> bool:
-        """Confirm migration with user."""
-        dlg = wx.MessageDialog(
-            None, msg, "WARNING", wx.OK | wx.ICON_WARNING | wx.CANCEL
-        )
-        return dlg.ShowModal() == wx.ID_OK
-
-    def _execute_conversion(self, libs_to_migrate: dict) -> None:
-        """Execute the library conversion."""
-        self.backend.print_to_buffer("Converted libraries:")
-        conversion_results = convert_lib_list(libs_to_migrate, drymode=False)
-
-        for old_path, new_path in conversion_results:
-            if new_path.endswith(".blk"):
-                self.backend.print_to_buffer(f"{old_path} rename to {new_path}")
-            else:
-                self.backend.print_to_buffer(f"{old_path} convert to {new_path}")
-
-    def _handle_library_renaming(self, msg: str, lib_rename: List[dict]) -> None:
-        """Handle library renaming in KiCad settings."""
-        msg_lib = (
-            "\nShould the change be made automatically? "
-            "A restart of KiCad is then necessary to apply all changes."
-        )
-
-        dlg = wx.MessageDialog(
-            None, msg + msg_lib, "WARNING", wx.OK | wx.ICON_WARNING | wx.CANCEL
-        )
-
-        if dlg.ShowModal() == wx.ID_OK:
-            result_msg = self.backend.kicad_settings.execute_library_migration(
-                lib_rename
-            )
-            self.backend.print_to_buffer(result_msg)
-        else:
-            self._show_manual_migration_instructions(lib_rename)
-
-    def _show_manual_migration_instructions(self, lib_rename: List[dict]) -> None:
-        """Show manual migration instructions."""
-        if not lib_rename:
-            return
-
-        msg_summary = (
-            "The following changes must be made to the list of imported Symbol libs:\n"
-        )
-
-        for item in lib_rename:
-            msg_summary += f"\n{item['name']}: {item['oldURI']} \n-> {item['newURI']}"
-
-        msg_summary += (
-            "\n\nIt is necessary to adjust the settings of the imported "
-            "symbol libraries in KiCad."
-        )
-
-        self.backend.print_to_buffer(msg_summary)
-
-
-def create_backend_handler():
+def create_backend_handler() -> ImpartBackend:
     """Create a new backend handler instance."""
     try:
         backend = ImpartBackend()

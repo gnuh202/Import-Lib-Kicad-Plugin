@@ -1,8 +1,9 @@
+from __future__ import annotations
+
 import logging
 import platform
 import sys
 from pathlib import Path
-from typing import Optional
 
 import pcbnew
 
@@ -17,10 +18,10 @@ log_file = plugin_dir / "plugin_fallback.log"
 
 # Initialize logger immediately - it will be configured later in setup_logging()
 logger = logging.getLogger("impart_plugin")
-log_handler: Optional[logging.FileHandler] = None
+log_handler: logging.FileHandler | None = None
 
 
-def setup_logging():
+def setup_logging() -> bool:
     """Setup logging for the plugin"""
     global logger, log_handler
 
@@ -34,9 +35,7 @@ def setup_logging():
             handler.close()
             logger.removeHandler(handler)
 
-        log_handler = logging.FileHandler(
-            str(log_file), mode="w", encoding="utf-8", delay=False
-        )
+        log_handler = logging.FileHandler(str(log_file), mode="w", encoding="utf-8", delay=False)
 
         formatter = logging.Formatter(
             "%(asctime)s %(levelname)s [%(name)s:%(filename)s:%(lineno)d]: %(message)s"
@@ -56,7 +55,7 @@ def setup_logging():
         return False
 
 
-def cleanup_logging():
+def cleanup_logging() -> None:
     """Clean up logging resources"""
     try:
         if log_handler:
@@ -72,7 +71,7 @@ def cleanup_logging():
         print(f"Logging cleanup failed: {e}")
 
 
-def setup_submodule_paths():
+def setup_submodule_paths() -> bool:
     """Set up Python paths for git submodules"""
     try:
         # Add kiutils submodule path
@@ -81,7 +80,7 @@ def setup_submodule_paths():
             kiutils_str = str(kiutils_path)
             if kiutils_str not in sys.path:
                 sys.path.insert(0, kiutils_str)
-                logger.info(f"✓ Added kiutils to sys.path: {kiutils_str}")
+                logger.info(f"Added kiutils to sys.path: {kiutils_str}")
 
         # Add easyeda2kicad submodule path
         easyeda2kicad_path = plugin_dir / "easyeda2kicad"
@@ -89,15 +88,15 @@ def setup_submodule_paths():
             easyeda2kicad_str = str(easyeda2kicad_path)
             if easyeda2kicad_str not in sys.path:
                 sys.path.insert(0, easyeda2kicad_str)
-                logger.info(f"✓ Added easyeda2kicad to sys.path: {easyeda2kicad_str}")
+                logger.info(f"Added easyeda2kicad to sys.path: {easyeda2kicad_str}")
 
         # Add plugin directory itself
         plugin_dir_str = str(plugin_dir)
         if plugin_dir_str not in sys.path:
             sys.path.insert(0, plugin_dir_str)
-            logger.info(f"✓ Added plugin directory to sys.path: {plugin_dir_str}")
+            logger.info(f"Added plugin directory to sys.path: {plugin_dir_str}")
 
-        logger.info("✓ All submodule paths configured successfully")
+        logger.info("All submodule paths configured successfully")
         return True
 
     except Exception as e:
@@ -105,7 +104,7 @@ def setup_submodule_paths():
         return False
 
 
-def show_error_dialog(title, message):
+def show_error_dialog(title: str, message: str) -> None:
     """Show error dialog with fallback to console"""
     try:
         app = wx.App() if not wx.GetApp() else None
@@ -119,17 +118,19 @@ def show_error_dialog(title, message):
 class ActionImpartPlugin(pcbnew.ActionPlugin):
     """KiCad Action Plugin for library import using git submodules."""
 
-    def defaults(self):
+    def defaults(self) -> None:
         self.name = "impartGUI (fallback pcbnew)"
         self.category = "Import library files"
-        self.description = "Import library files from Octopart, Samacsys, Ultralibrarian, Snapeda and EasyEDA"
+        self.description = (
+            "Import library files from Octopart, Samacsys, Ultralibrarian, Snapeda and EasyEDA"
+        )
         self.show_toolbar_button = True
 
         icon_path = plugin_dir / "icon.png"
         self.icon_file_name = str(icon_path)
         self.dark_icon_file_name = str(icon_path)
 
-    def Run(self):
+    def Run(self) -> None:
         """Run the plugin with git submodules."""
         try:
             setup_logging()
@@ -164,7 +165,7 @@ class ActionImpartPlugin(pcbnew.ActionPlugin):
         finally:
             cleanup_logging()
 
-    def _start_plugin_frontend(self):
+    def _start_plugin_frontend(self) -> None:
         """Start the main plugin frontend"""
         try:
             logger.info("Starting plugin frontend")
@@ -181,9 +182,7 @@ class ActionImpartPlugin(pcbnew.ActionPlugin):
             logger.exception("Frontend error occurred")
 
             error_msg = (
-                f"Frontend Error:\n\n"
-                f"Error: {str(e)}\n\n"
-                f"Check log file for details: {log_file}"
+                f"Frontend Error:\n\nError: {str(e)}\n\nCheck log file for details: {log_file}"
             )
 
             show_error_dialog("Frontend Error", error_msg)
